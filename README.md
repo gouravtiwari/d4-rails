@@ -1,7 +1,7 @@
 d4-rails
 ========
 
-Integrate d4 DSL (for d3 library) with your rails application
+Integrate [d4 DSL (for d3 library)](https://github.com/heavysixer/d4) with your rails application
 
 ## Pre-requisites:
 
@@ -36,4 +36,3 @@ That's it! :pray:
 **Note**
 
 This project uses MIT-LICENSE.
-
