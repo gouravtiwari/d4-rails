@@ -4,7 +4,7 @@ require 'd4-rails/version'
 
 Gem::Specification.new do |spec|
   spec.name           = "d4-rails"
-  spec.version        = D4Rails::VERSION
+  spec.version        = D4Rails::VERSION::STRING
   spec.authors        = ["Ankit Gupta", "Gourav Tiwari"]
   spec.email          = ["ankit8898@gmail.com", "gouravtiwari21@gmail.com"]
   spec.homepage       = "https://github.com/gouravtiwari/d4-rail"
