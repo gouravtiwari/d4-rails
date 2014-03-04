@@ -1,9 +1,9 @@
 /* d4-rails includes d4 library to provide DSL for d3 for Rails applications
  * License: MIT
  */
-/*! d4 - v0.1.0
+/*! d4 - v0.4.0
  *  License: MIT Expat
- *  Date: 2014-02-23
+ *  Date: 2014-03-02
  */
 /*!
   Functions "each", "extend", and "isFunction" based on Underscore.js 1.5.2
@@ -42,8 +42,10 @@
     root.d4 = d4;
   }
 
+  d4.charts = {};
   d4.features = {};
   d4.parsers = {};
+  d4.builders = {};
 
   var each = d4.each = d4.forEach = function(obj, iterator, context) {
     var nativeForEach = Array.prototype.forEach,
@@ -69,22 +71,21 @@
     }
   };
 
-  var isFunction = function(obj) {
-    return !!(obj && obj.constructor && obj.call && obj.apply);
-  };
-
-  var isNotFunction = function(obj) {
-    return !isFunction(obj);
-  };
-
-  var assert = function(message) {
+  var err = function() {
+    var parts = Array.prototype.slice.call(arguments);
+    var message = parts.shift();
+    var regexp;
+    each(parts, function(str, i){
+      regexp = new RegExp('\\{' + i + '\\}', 'gi');
+      message = message.replace(regexp, str);
+    });
     throw new Error('[d4] ' + message);
   };
 
   var validateBuilder = function(builder) {
     each(['configure'], function(funct) {
-      if (!builder[funct] || isNotFunction(builder[funct])) {
-        assert('The supplied builder does not have a ' + funct + ' function');
+      if (!builder[funct] || d4.isNotFunction(builder[funct])) {
+        err('The supplied builder does not have a {0} function', funct);
       }
     });
     return builder;
@@ -99,7 +100,7 @@
 
   var assignDefaults = function(config, defaultBuilder) {
     if (!defaultBuilder) {
-      assert('No builder defined');
+      err('No builder defined');
     }
     var opts = d4.merge({
       width: 400,
@@ -133,9 +134,9 @@
     if(selection){
       each(d3.keys(feature._proxiedFunctions), function(key){
         each(feature._proxiedFunctions[key], function(proxiedArgs){
-          selection[key].apply(selection, proxiedArgs)
+          selection[key].apply(selection, proxiedArgs);
         });
-      })
+      });
     }
   };
 
@@ -151,7 +152,7 @@
       opts.builder.configure(opts, data);
       linkFeatures(opts, data);
     } else {
-      assert('No builder defined');
+      err('No builder defined');
     }
   };
 
@@ -164,9 +165,47 @@
     this.svg.append('defs');
   };
 
+  /*!
+    Normally d4 series elements inside the data array to be in a specific
+  format, which is designed to support charts which require multiple data
+  series. However, some charts can easily be used to display only a single data
+  series in which case the default structure is overly verbose. In these cases
+  d4 accepts the simplified objects in the array payload and silently
+  parses them using the d4.nestedGroup parser. It will configure the parser's
+  dimensions based on the configuration applied to the chart object itself.
+  */
+  var applyDefaultParser = function(opts, data) {
+    if(opts.yKey !== opts.valueKey){
+      opts.valueKey = opts.yKey;
+    }
+    var parsed = d4.parsers.nestedGroup()
+    .x(opts.xKey)
+    .y(opts.yKey)
+    .nestKey(opts.xKey)
+    .value(opts.valueKey)(data);
+    return parsed.data;
+  };
+
+  var prepareData = function(opts, data) {
+    var needsParsing = false, keys, item;
+    if(data.length > 0){
+      item = data[0];
+      if(d4.isArray(item)) {
+        needsParsing = true;
+      } else {
+        keys = d3.keys(item);
+        if(keys.indexOf('key') + keys.indexOf('values') <= 0) {
+          needsParsing = true;
+        }
+      }
+    }
+    return needsParsing ? applyDefaultParser(opts, data) : data;
+  };
+
   var applyScaffold = function(opts) {
     return function(selection) {
       selection.each(function(data) {
+        data = prepareData(opts, data);
         scaffoldChart.bind(opts, this)(data);
         build(opts, data);
       });
@@ -221,7 +260,7 @@
 
   var mixin = function(feature, index) {
     if (!feature) {
-      assert('You need to supply an object to mixin.');
+      err('You need to supply an object to mixin.');
     }
     var name = d3.keys(feature)[0];
     var overrides = extractOverrides.bind(this)(feature, name);
@@ -233,7 +272,7 @@
 
   var mixout = function(name) {
     if (!name) {
-      assert('A name is required in order to mixout a chart feature.');
+      err('A name is required in order to mixout a chart feature.');
     }
 
     delete this.features[name];
@@ -244,14 +283,58 @@
 
   var using = function(name, funct) {
     var feature = this.features[name];
-    if (isNotFunction(funct)) {
-      assert('You must supply a continuation function in order to use a chart feature.');
+    if (d4.isNotFunction(funct)) {
+      err('You must supply a continuation function in order to use a chart feature.');
     }
     if (!feature) {
-      assert('Could not find feature: "' + name + '", maybe you forgot to mix it in?');
+      err('Could not find feature: "{0}", maybe you forgot to mix it in?', name);
     } else {
       funct.bind(this)(feature);
     }
+  };
+
+  /**
+   * This function allows you to register a reusable chart with d4.
+   * @param {String} name - accessor name for chart.
+   * @param {Function} funct - function which will instantiate the chart.
+   * @returns a reference to the chart function
+  */
+  d4.chart = function(name, funct) {
+    d4.charts[name] = funct;
+    return d4.charts[name];
+  };
+
+  /**
+   * This function allows you to register a reusable chart feature with d4.
+   * @param {String} name - accessor name for chart feature.
+   * @param {Function} funct - function which will instantiate the chart feature.
+   * @returns a reference to the chart feature
+  */
+  d4.feature = function(name, funct) {
+    d4.features[name] = funct;
+    return d4.features[name];
+  };
+
+  /**
+   * This function allows you to register a reusable chart builder with d4.
+   * @param {String} name - accessor name for chart builder.
+   * @param {Function} funct - function which will instantiate the chart builder.
+   * @returns a reference to the chart builder
+  */
+  d4.builder = function(name, funct) {
+    d4.builders[name] = funct;
+    return d4.builders[name];
+  };
+
+  /**
+   * This function allows you to register a reusable data parser with d4.
+   * @param {String} name - accessor name for data parser.
+   * @param {Function} funct - function which will instantiate the data parser.
+   * @returns a reference to the data parser
+  */
+  d4.parser = function(name, funct) {
+    d4.parsers[name] = funct;
+    return d4.parsers[name];
   };
 
   d4.baseChart = function(config, defaultBuilder) {
@@ -327,7 +410,7 @@
      *##### Examples
      *
      *      // Mixout the yAxis which is provided as a default
-     *      var chart = d4.columnChart()
+     *      var chart = d4.charts.column()
      *      .mixout('yAxis');
      *
      *      // Now test that the feature has been removed.
@@ -372,7 +455,7 @@
      *##### Examples
      *
      *      // Mixout the yAxis which is provided as a default
-     *      var chart = d4.columnChart()
+     *      var chart = d4.charts.column()
      *      .mixout('yAxis');
      *
      *      // Now test that the feature has been removed.
@@ -384,25 +467,37 @@
       return opts.mixins;
     };
 
-    /**
-     * Based on D3's own functor function.
-     * > If the specified value is a function, returns the specified value. Otherwise,
-     * > returns a function that returns the specified value. This method is used
-     * > internally as a lazy way of upcasting constant values to functions, in
-     * > cases where a property may be specified either as a function or a constant.
-     * > For example, many D3 layouts allow properties to be specified this way,
-     * > and it simplifies the implementation if we automatically convert constant
-     * > values to functions.
-     *
-     * @param {Varies} funct - An function or other variable to be wrapped in a function
-     */
-    d4.functor = function(funct) {
-      return isFunction(funct) ? funct : function() {
-        return funct;
-      };
-    };
-
     return chart;
+  };
+
+  /**
+   * Based on D3's own functor function.
+   * > If the specified value is a function, returns the specified value. Otherwise,
+   * > returns a function that returns the specified value. This method is used
+   * > internally as a lazy way of upcasting constant values to functions, in
+   * > cases where a property may be specified either as a function or a constant.
+   * > For example, many D3 layouts allow properties to be specified this way,
+   * > and it simplifies the implementation if we automatically convert constant
+   * > values to functions.
+   *
+   * @param {Varies} funct - An function or other variable to be wrapped in a function
+   */
+  d4.functor = function(funct) {
+    return d4.isFunction(funct) ? funct : function() {
+      return funct;
+    };
+  };
+
+  d4.isArray = Array.isArray || function(val) {
+    return Object.prototype.toString.call(val) === '[object Array]';
+  };
+
+  d4.isFunction = function(obj) {
+    return !!(obj && obj.constructor && obj.call && obj.apply);
+  };
+
+  d4.isNotFunction = function(obj) {
+    return !d4.isFunction(obj);
   };
 
   d4.merge = function(options, overrides) {
@@ -434,38 +529,16 @@
    * global d4: false
    */
   'use strict';
+
   var columnChartBuilder = function() {
-    var configureX = function(chart, data) {
-      if (!chart.x) {
-        chart.xRoundBands = chart.xRoundBands || 0.3;
-        chart.x = d3.scale.ordinal()
-          .domain(data.map(function(d) {
-            return d[this.xKey];
-          }.bind(chart)))
-          .rangeRoundBands([0, chart.width - chart.margin.left - chart.margin.right], chart.xRoundBands);
-      }
-    };
-
-    var configureY = function(chart, data) {
-      if (!chart.y) {
-        chart.y = d3.scale.linear()
-          .domain(d3.extent(data, function(d) {
-            return d[this.yKey];
-          }.bind(chart)));
-      }
-      chart.y.range([chart.height - chart.margin.top - chart.margin.bottom, 0])
-        .clamp(true)
-        .nice();
-    };
-
-    var configureScales = function(chart, data) {
-      configureX.bind(this)(chart, data);
-      configureY.bind(this)(chart, data);
-    };
-
     var builder = {
       configure: function(chart, data) {
-        configureScales.bind(this)(chart, data);
+        if(!chart.x){
+          d4.builders.ordinalScaleForNestedData(chart, data, 'x');
+        }
+        if(!chart.y){
+          d4.builders.linearScaleForNestedData(chart, data, 'y');
+        }
       }
     };
     return builder;
@@ -490,7 +563,7 @@
         { x: '2013', y:40 },
         { x: '2014', y:50 },
       ];
-    var chart = d4.columnChart();
+    var chart = d4.charts.column();
     d3.select('#example')
     .datum(data)
     .call(chart);
@@ -505,7 +578,7 @@ The default format may not be desired and so we'll override it:
       ['2013', 40],
       ['2014', 50]
     ];
-    var chart = d4.columnChart()
+    var chart = d4.charts.column()
     .xKey(0)
     .yKey(1);
 
@@ -514,12 +587,12 @@ The default format may not be desired and so we'll override it:
     .call(chart);
 
   */
-  d4.columnChart = function columnChart() {
+  d4.chart('column', function columnChart() {
     var chart = d4.baseChart({}, columnChartBuilder);
     [{
-      'bars': d4.features.columnSeries
+      'bars': d4.features.stackedColumnSeries
     }, {
-      'barLabels': d4.features.columnLabels
+      'barLabels': d4.features.stackedColumnLabels
     }, {
       'xAxis': d4.features.xAxis
     }, {
@@ -528,7 +601,7 @@ The default format may not be desired and so we'll override it:
       chart.mixin(feature);
     });
     return chart;
-  };
+  });
 }).call(this);
 
 (function() {
@@ -539,44 +612,14 @@ The default format may not be desired and so we'll override it:
   'use strict';
 
   var groupedColumnChartBuilder = function() {
-    var extractValues = function(data, key) {
-      var values = data.map(function(obj){
-        return obj.values.map(function(i){
-          return i[key];
-        }.bind(this));
-      }.bind(this));
-      return d3.merge(values);
-    };
-
-    var configureX = function(chart, data) {
-      if (!chart.x) {
-        var xData = extractValues(data, chart.xKey);
-        chart.xRoundBands = chart.xRoundBands || 0.3;
-        chart.x = d3.scale.ordinal()
-          .domain(xData)
-          .rangeRoundBands([0, chart.width - chart.margin.left - chart.margin.right], chart.xRoundBands);
-      }
-    };
-
-    var configureY = function(chart, data) {
-      if (!chart.y) {
-        var yData = extractValues(data, chart.yKey);
-        var ext = d3.extent(yData);
-        chart.y = d3.scale.linear().domain([Math.min(0, ext[0]),ext[1]]);
-      }
-      chart.y.range([chart.height - chart.margin.top - chart.margin.bottom, 0])
-        .clamp(true)
-        .nice();
-    };
-
-    var configureScales = function(chart, data) {
-      configureX.bind(this)(chart, data);
-      configureY.bind(this)(chart, data);
-    };
-
     var builder = {
       configure: function(chart, data) {
-        configureScales.bind(this)(chart, data);
+        if(!chart.x){
+          d4.builders.ordinalScaleForNestedData(chart, data, 'x');
+        }
+        if(!chart.y){
+          d4.builders.linearScaleForNestedData(chart, data, 'y');
+        }
       }
     };
     return builder;
@@ -620,7 +663,7 @@ relative distribution.
       .y('unitsSold')
       .value('unitsSold')(data);
 
-    var chart = d4.groupedColumnChart()
+    var chart = d4.charts.groupedColumn()
     .width($('#example').width())
     .xKey('year')
     .yKey('unitsSold')
@@ -631,7 +674,7 @@ relative distribution.
     .call(chart);
 
   */
-  d4.groupedColumnChart = function groupedColumnChart() {
+  d4.chart('groupedColumn', function groupedColumnChart() {
     var chart = d4.baseChart({
       accessors: ['groupsOf'],
       groupsOf: 1
@@ -648,7 +691,7 @@ relative distribution.
       chart.mixin(feature);
     });
     return chart;
-  };
+  });
 }).call(this);
 
 (function() {
@@ -659,44 +702,14 @@ relative distribution.
   'use strict';
 
   var lineChartBuilder = function() {
-    var extractValues = function(data, key) {
-      var values = data.map(function(obj){
-        return obj.values.map(function(i){
-          return i[key];
-        }.bind(this));
-      }.bind(this));
-      return d3.merge(values);
-    };
-
-    var configureX = function(chart, data) {
-      if (!chart.x) {
-        var xData = extractValues(data, chart.xKey);
-        chart.xRoundBands = chart.xRoundBands || 0.3;
-        chart.x = d3.scale.ordinal()
-          .domain(xData)
-          .rangeRoundBands([0, chart.width - chart.margin.left - chart.margin.right], chart.xRoundBands);
-      }
-    };
-
-    var configureY = function(chart, data) {
-      if (!chart.y) {
-        var yData = extractValues(data, chart.yKey);
-        var ext = d3.extent(yData);
-        chart.y = d3.scale.linear().domain(ext);
-      }
-      chart.y.range([chart.height - chart.margin.top - chart.margin.bottom, 0])
-        .clamp(true)
-        .nice();
-    };
-
-    var configureScales = function(chart, data) {
-      configureX.bind(this)(chart, data);
-      configureY.bind(this)(chart, data);
-    };
-
     var builder = {
       configure: function(chart, data) {
-        configureScales.bind(this)(chart, data);
+        if(!chart.x){
+          d4.builders.ordinalScaleForNestedData(chart, data, 'x');
+        }
+        if(!chart.y){
+          d4.builders.linearScaleForNestedData(chart, data, 'y');
+        }
       }
     };
     return builder;
@@ -744,7 +757,7 @@ relative distribution.
         return 'unitsSold';
       })(data);
 
-    var chart = d4.lineChart()
+    var chart = d4.charts.line()
     .width($('#example').width())
     .xKey('year')
     .yKey('unitsSold');
@@ -754,12 +767,12 @@ relative distribution.
     .call(chart);
 
   */
-  d4.lineChart = function lineChart() {
+  d4.chart('line', function lineChart() {
     var chart = d4.baseChart({}, lineChartBuilder);
     [{
-      'linesSeries': d4.features.lineSeries
+      'lineSeries': d4.features.lineSeries
     },{
-      'linesSeriesLabels': d4.features.lineSeriesLabels
+      'lineSeriesLabels': d4.features.lineSeriesLabels
     }, {
       'xAxis': d4.features.xAxis
     }, {
@@ -768,7 +781,7 @@ relative distribution.
       chart.mixin(feature);
     });
     return chart;
-  };
+  });
 }).call(this);
 (function() {
   /*!
@@ -778,37 +791,15 @@ relative distribution.
   'use strict';
 
   var rowChartBuilder = function() {
-    var configureX = function(chart, data) {
-      if (!chart.x) {
-        chart.x = d3.scale.linear()
-          .domain(d3.extent(data, function(d) {
-            return d[chart.xKey];
-          }.bind(this)));
-      }
-      chart.x.range([0, chart.width - chart.margin.right - chart.margin.left])
-      .clamp(true)
-      .nice();
-    };
-
-    var configureY = function(chart, data) {
-      if (!chart.y) {
-        chart.yRoundBands = chart.yRoundBands || 0.3;
-        chart.y = d3.scale.ordinal()
-          .domain(data.map(function(d) {
-            return d[chart.yKey];
-          }.bind(this)))
-          .rangeRoundBands([chart.height - chart.margin.top - chart.margin.bottom, 0], chart.yRoundBands);
-      }
-    };
-
-    var configureScales = function(chart, data) {
-      configureX.bind(this)(chart, data);
-      configureY.bind(this)(chart, data);
-    };
-
     var builder = {
       configure: function(chart, data) {
-        configureScales.bind(this)(chart, data);
+        if(!chart.x){
+          d4.builders.linearScaleForNestedData(chart, data, 'x');
+        }
+
+        if(!chart.y){
+          d4.builders.ordinalScaleForNestedData(chart, data, 'y');
+        }
       }
     };
     return builder;
@@ -833,14 +824,14 @@ relative distribution.
           { y: '2013', x:40 },
           { y: '2014', x:50 },
         ];
-      var chart = d4.rowChart();
+      var chart = d4.charts.row();
       d3.select('#example')
       .datum(data)
       .call(chart);
 
 
   */
-  d4.rowChart = function rowChart() {
+  d4.chart('row', function rowChart() {
     var chart = d4.baseChart({
       margin: {
         top: 20,
@@ -861,7 +852,7 @@ relative distribution.
       chart.mixin(feature);
     });
     return chart;
-  };
+  });
 }).call(this);
 (function() {
   /*!
@@ -871,49 +862,21 @@ relative distribution.
   'use strict';
 
   var scatterPlotBuilder = function() {
-    var configureX = function(chart, data) {
-      if (!chart.x) {
-        var ext = d3.extent(data, function(d) {
-          return d[chart.xKey];
-        }.bind(this));
-        chart.x = d3.scale.linear()
-          .domain(ext)
-          .nice()
-          .clamp(true);
-      }
-      chart.x.range([0, chart.width - chart.margin.left - chart.margin.right]);
-    };
-
-    var configureY = function(chart, data) {
-      if (!chart.y) {
-        var ext = d3.extent(data, function(d) {
-          return d[chart.yKey];
-        }.bind(this));
-        chart.y = d3.scale.linear()
-          .domain(ext)
-          .nice()
-          .clamp(true);
-      }
-      chart.y.range([chart.height - chart.margin.top - chart.margin.bottom, 0]);
-    };
-
-    var configureZ = function(chart, data) {
-      if (!chart.z) {
-        var ext = d3.extent(data, function(d) {
-          return d[chart.zKey];
-        }.bind(this));
-        chart.z = d3.scale.linear()
-          .domain(ext)
-          .nice()
-          .clamp(true);
-      }
-      var maxSize = (chart.height - chart.margin.top - chart.margin.bottom);
-      chart.z.range([maxSize / data.length, maxSize / (data.length * 5)]);
-    };
     var configureScales = function(chart, data) {
-      configureX.bind(this)(chart, data);
-      configureY.bind(this)(chart, data);
-      configureZ.bind(this)(chart, data);
+      if(!chart.x){
+        d4.builders.linearScaleForNestedData(chart, data, 'x');
+      }
+
+      if(!chart.y){
+        d4.builders.linearScaleForNestedData(chart, data, 'y');
+      }
+
+      if(!chart.z){
+        d4.builders.linearScaleForNestedData(chart, data, 'z');
+        var min = 5;
+        var max = Math.max(min + 1, (chart.height - chart.margin.top - chart.margin.bottom)/10);
+        chart.z.range([min, max]);
+      }
     };
 
     var builder = {
@@ -924,13 +887,13 @@ relative distribution.
     return builder;
   };
 
-  d4.scatterPlot = function() {
+  d4.chart('scatterPlot', function() {
     var chart = d4.baseChart({
       accessors: ['z', 'zKey'],
       zKey: 'z'
     }, scatterPlotBuilder);
     [{
-      'circles': d4.features.scatterSeries
+      'circles': d4.features.dotSeries
     }, {
       'xAxis': d4.features.xAxis
     }, {
@@ -939,7 +902,7 @@ relative distribution.
       chart.mixin(feature);
     });
     return chart;
-  };
+  });
 }).call(this);
 
 (function() {
@@ -950,58 +913,25 @@ relative distribution.
   'use strict';
 
   var stackedColumnChartBuilder = function() {
-    var extractValues = function(data, key) {
-      var values = data.map(function(obj){
-        return obj.values.map(function(i){
-          return i[key];
-        }.bind(this));
-      }.bind(this));
-      return d3.merge(values);
-    };
-
-    var configureX = function(chart, data) {
-      if (!chart.x) {
-        var xData = extractValues(data, chart.xKey);
-        chart.xRoundBands = chart.xRoundBands || 0.3;
-        chart.x = d3.scale.ordinal()
-          .domain(xData)
-          .rangeRoundBands([0, chart.width - chart.margin.left - chart.margin.right], chart.xRoundBands);
-      }
-    };
-
-    var configureY = function(chart, data) {
-      if (!chart.y) {
-        var ext = d3.extent(d3.merge(data.map(function(obj){
-          return d3.extent(obj.values, function(d){
-            return d.y + d.y0;
-          });
-        })));
-        chart.y = d3.scale.linear().domain([Math.min(0, ext[0]),ext[1]]);
-      }
-      chart.y.range([chart.height - chart.margin.top - chart.margin.bottom, 0])
-        .clamp(true)
-        .nice();
-    };
-
-    var configureScales = function(chart, data) {
-      configureX.bind(this)(chart, data);
-      configureY.bind(this)(chart, data);
-    };
-
     var builder = {
       configure: function(chart, data) {
-        configureScales.bind(this)(chart, data);
+        if(!chart.x){
+          d4.builders.ordinalScaleForNestedData(chart, data, 'x');
+        }
+        if(!chart.y){
+          d4.builders.linearScaleForNestedData(chart, data, 'y');
+        }
       }
     };
     return builder;
   };
 
-  d4.stackedColumnChart = function stackedColumnChart() {
+  d4.chart('stackedColumn', function stackedColumnChart() {
     var chart = d4.baseChart({}, stackedColumnChartBuilder);
     [{
       'bars': d4.features.stackedColumnSeries
     }, {
-      'columnLabels': d4.features.stackedColumnLabels
+      'barLabels': d4.features.stackedColumnLabels
     }, {
       'connectors': d4.features.stackedColumnConnectors
     }, {
@@ -1012,7 +942,7 @@ relative distribution.
       chart.mixin(feature);
     });
     return chart;
-  };
+  });
 }).call(this);
 
 (function() {
@@ -1166,7 +1096,7 @@ relative distribution.
     return builder;
   };
 
-  d4.waterfallChart = function waterfallChart() {
+  d4.chart('waterfall', function waterfallChart() {
     var chart = d4.baseChart({
       accessors: ['orientation'],
       orientation: orientation
@@ -1188,7 +1118,7 @@ relative distribution.
     });
 
     return chart;
-  };
+  });
 }).call(this);
 
 (function() {
@@ -1197,7 +1127,7 @@ relative distribution.
    * global d4: false
    */
   'use strict';
-  d4.features.arrow = function(name) {
+  d4.feature('arrow', function(name) {
     return {
       accessors: {
         tipSize: function(){
@@ -1257,7 +1187,7 @@ relative distribution.
         return arrow;
       }
     };
-  };
+  });
 }).call(this);
 
 (function() {
@@ -1267,96 +1197,50 @@ relative distribution.
    */
 
   'use strict';
-  d4.features.columnLabels = function(name) {
+  d4.feature('dotSeries', function(name) {
     return {
       accessors: {
-        x: function(d) {
-          return this.x(d[this.xKey]) + (this.x.rangeBand() / 2);
-        },
-
-        y: function(d) {
-          var height = Math.abs(this.y(d[this.yKey]) - this.y(0));
-          return (d[this.yKey] < 0 ? this.y(d[this.yKey]) - height : this.y(d[this.yKey])) - 5;
-        },
-
-        text: function(d) {
-          return d3.format('').call(this, d[this.yKey]);
-        }
-      },
-      render: function(scope, data) {
-        this.featuresGroup.append('g').attr('class', name);
-        var label = this.svg.select('.'+name).selectAll('.'+name).data(data);
-        label.enter().append('text');
-        label.exit().remove();
-        label.attr('class', 'column-label')
-          .text(scope.accessors.text.bind(this))
-          .attr('x', scope.accessors.x.bind(this))
-          .attr('y', scope.accessors.y.bind(this));
-        return label;
-      }
-    };
-  };
-}).call(this);
-
-/*!
-
-  DEPRECATION WARNING: This feature is deprecated in favor of using the nested
-  column series renderer. Intrinsicly this makes sense because a normal column
-  chart is mearly a stacked column chart with only one series.
-*/
-(function() {
-  /*!
-   * global d3: false
-   * global d4: false
-   */
-  'use strict';
-  d4.features.columnSeries = function(name) {
-    return {
-      accessors: {
-        x: function(d) {
+        cx: function(d) {
           return this.x(d[this.xKey]);
         },
 
-        y: function(d) {
-          return d[this.yKey] < 0 ? this.y(0) : this.y(d[this.yKey]);
+        cy: function(d) {
+          return this.y(d[this.yKey]);
         },
 
-        width: function() {
-          return this.x.rangeBand();
+        r: function(d) {
+          return this.z(d[this.zKey]);
         },
 
-        height: function(d) {
-          return Math.abs(this.y(d[this.yKey]) - this.y(0));
-        },
-
-        classes: function(d, i) {
-          return d[this.yKey] < 0 ? 'bar negative fill series' + i : 'bar positive fill series' + i;
+        classes : function(d, i) {
+          return 'dot series' + i + ' fill';
         }
       },
       render: function(scope, data) {
         this.featuresGroup.append('g').attr('class', name);
-        var series = this.svg.select('.' + name).selectAll('.' + name + 'Series').data(data);
-        series.enter().append('g');
-        series.exit().remove();
-        series.attr('class', function(d, i) {
-          return 'series' + i;
-        });
+        var group = this.svg.select('.' + name).selectAll('.group')
+          .data(data)
+          .enter().append('g')
+          .attr('class', function(d,i) {
+            return 'series'+ i + ' ' +  this.yKey;
+          }.bind(this));
 
-        var bar = series.selectAll('rect').data(function(d) {
-          return [d];
-        });
-        bar.enter().append('rect');
-        bar.exit().remove();
-        bar.attr('class', scope.accessors.classes.bind(this))
-          .attr('x', scope.accessors.x.bind(this))
-          .attr('y', scope.accessors.y.bind(this))
-          .attr('width', scope.accessors.width.bind(this))
-          .attr('height', scope.accessors.height.bind(this));
+        var dots = group.selectAll('circle')
+          .data(function(d) {
+            return d.values;
+          }.bind(this));
 
-        return bar;
+        dots.enter().append('circle');
+        dots.exit().remove();
+        dots
+          .attr('class', scope.accessors.classes.bind(this))
+          .attr('r', scope.accessors.r.bind(this))
+          .attr('cx', scope.accessors.cx.bind(this))
+          .attr('cy', scope.accessors.cy.bind(this));
+        return dots;
       }
     };
-  };
+  });
 }).call(this);
 
 (function() {
@@ -1365,7 +1249,7 @@ relative distribution.
    * global d4: false
    */
   'use strict';
-  d4.features.grid = function(name) {
+  d4.feature('grid', function(name) {
 
     return {
       accessors: {
@@ -1404,7 +1288,7 @@ relative distribution.
           .tickFormat(''));
       }
     };
-  };
+  });
 }).call(this);
 (function() {
   /*!
@@ -1412,7 +1296,7 @@ relative distribution.
    * global d4: false
    */
   'use strict';
-  d4.features.groupedColumnLabels = function(name) {
+  d4.feature('groupedColumnLabels', function(name) {
     return {
       accessors: {
         x: function(d, i) {
@@ -1452,7 +1336,7 @@ relative distribution.
         return text;
       }
     };
-  };
+  });
 }).call(this);
 
 (function() {
@@ -1461,7 +1345,7 @@ relative distribution.
    * global d4: false
    */
   'use strict';
-  d4.features.groupedColumnSeries = function(name) {
+  d4.feature('groupedColumnSeries', function(name) {
     var sign = function(val) {
       return (val > 0) ? 'positive' : 'negative';
     };
@@ -1515,7 +1399,7 @@ relative distribution.
         return rect;
       }
     };
-  };
+  });
 }).call(this);
 
 (function() {
@@ -1525,7 +1409,7 @@ relative distribution.
    */
 
   'use strict';
-  d4.features.lineSeriesLabels = function(name) {
+  d4.feature('lineSeriesLabels', function(name) {
     return {
       accessors: {
         x: function(d) {
@@ -1560,7 +1444,7 @@ relative distribution.
         return label;
       }
     };
-  };
+  });
 }).call(this);
 (function() {
   /*!
@@ -1569,7 +1453,7 @@ relative distribution.
    */
 
   'use strict';
-  d4.features.lineSeries = function(name) {
+  d4.feature('lineSeries', function(name) {
     return {
       accessors: {
         x: function(d) {
@@ -1608,7 +1492,7 @@ relative distribution.
           });
       }
     };
-  };
+  });
 }).call(this);
 
 (function() {
@@ -1618,7 +1502,7 @@ relative distribution.
    */
 
   'use strict';
-  d4.features.referenceLine = function(name) {
+  d4.feature('referenceLine', function(name) {
     return {
       accessors: {
         x1: function() {
@@ -1649,7 +1533,7 @@ relative distribution.
         return referenceLine;
       }
     };
-  };
+  });
 }).call(this);
 
 (function() {
@@ -1659,11 +1543,12 @@ relative distribution.
    */
 
   'use strict';
-  d4.features.rowLabels = function(name) {
+  d4.feature('rowLabels', function(name) {
     return {
       accessors: {
         x: function(d) {
-          return this.x(Math.min(0, d[this.xKey])) + Math.abs(this.x(d[this.xKey]) - this.x(0)) + 20;
+          var width = (Math.abs(this.x(d[this.xKey])) + this.x(d[this.xKey]))/2;
+          return Math.max(this.x(0), width) + 10;
         },
 
         y: function(d) {
@@ -1676,17 +1561,27 @@ relative distribution.
       },
       render: function(scope, data) {
         this.featuresGroup.append('g').attr('class', name);
-        var label = this.svg.select('.'+name).selectAll('.'+name).data(data);
-        label.enter().append('text');
-        label.exit().remove();
-        label.attr('class', 'column-label')
+        var group = this.svg.select('.' + name).selectAll('.group')
+          .data(data)
+          .enter().append('g')
+          .attr('class', function(d, i) {
+            return 'series' + i + ' ' + this.xKey;
+          }.bind(this));
+
+        var text = group.selectAll('text')
+          .data(function(d) {
+            return d.values;
+          }.bind(this));
+        text.exit().remove();
+        text.enter().append('text')
           .text(scope.accessors.text.bind(this))
-          .attr('x', scope.accessors.x.bind(this))
-          .attr('y', scope.accessors.y.bind(this));
-        return label;
+          .attr('class', 'column-label')
+          .attr('y', scope.accessors.y.bind(this))
+          .attr('x', scope.accessors.x.bind(this));
+        return text;
       }
     };
-  };
+  });
 }).call(this);
 
 (function() {
@@ -1696,86 +1591,58 @@ relative distribution.
    */
 
   'use strict';
-  d4.features.rowSeries = function(name) {
+  d4.feature('rowSeries', function(name) {
+    var sign = function(val){
+      return (val > 0) ? 'positive' : 'negative';
+    };
+
     return {
       accessors: {
         x: function(d) {
-          return this.x(Math.min(0, d[this.xKey]));
+          var xVal = d[this.xKey] - Math.max(0, d[this.xKey]);
+          return this.x(xVal);
         },
 
         y: function(d) {
           return this.y(d[this.yKey]);
         },
 
-        height: function() {
-          return this.y.rangeBand();
-        },
-
         width: function(d) {
           return Math.abs(this.x(d[this.xKey]) - this.x(0));
         },
 
-        classes: function(d, i) {
-          return d[this.xKey] < 0 ? 'bar negative fill series' + i : 'bar positive fill series' + i;
+        height: function() {
+          return this.y.rangeBand();
+        },
+
+        classes: function(d,i) {
+          return 'bar fill item'+ i + ' ' + sign(d.y) + ' ' + d[this.xKey];
         }
       },
       render: function(scope, data) {
         this.featuresGroup.append('g').attr('class', name);
-        var bar = this.svg.select('.'+name).selectAll('.'+name).data(data);
-        bar.enter().append('rect');
-        bar.exit().remove();
-        bar.attr('class', scope.accessors.classes.bind(this))
+        var group = this.svg.select('.' + name).selectAll('.group')
+          .data(data)
+          .enter().append('g')
+          .attr('class', function(d,i) {
+            return 'series'+ i + ' ' +  this.yKey;
+          }.bind(this));
+
+        var rect = group.selectAll('rect')
+          .data(function(d) {
+            return d.values;
+          }.bind(this));
+
+        rect.enter().append('rect')
+          .attr('class', scope.accessors.classes.bind(this))
           .attr('x', scope.accessors.x.bind(this))
           .attr('y', scope.accessors.y.bind(this))
           .attr('width', scope.accessors.width.bind(this))
           .attr('height', scope.accessors.height.bind(this));
-
-        return bar;
+        return rect;
       }
     };
-  };
-}).call(this);
-
-(function() {
-  /*!
-   * global d3: false
-   * global d4: false
-   */
-
-  'use strict';
-  d4.features.scatterSeries = function(name) {
-    return {
-      accessors: {
-        cx: function(d) {
-          return this.x(d[this.xKey]);
-        },
-
-        cy: function(d) {
-          return this.y(d[this.yKey]);
-        },
-
-        r: function(d) {
-          return this.z(d[this.zKey]);
-        },
-
-        classes : function(d, i) {
-          return 'dot series' + i + ' fill';
-        }
-      },
-      render: function(scope, data) {
-        this.featuresGroup.append('g').attr('class', name);
-        var dots = this.svg.select('.'+name).selectAll('.'+name).data(data);
-        dots.enter().append('circle');
-        dots.attr('class', scope.accessors.classes.bind(this))
-        .attr('r', scope.accessors.r.bind(this))
-        .attr('cx', scope.accessors.cx.bind(this))
-        .attr('cy', scope.accessors.cy.bind(this));
-
-        // returning a selection allows d4 to bind d3 events to it.
-        return dots;
-      }
-    };
-  };
+  });
 }).call(this);
 
 (function() {
@@ -1791,7 +1658,7 @@ relative distribution.
     location. This creates a messy collection of crisscrossing lines.
   */
   'use strict';
-  d4.features.stackedColumnConnectors = function(name) {
+  d4.feature('stackedColumnConnectors', function(name) {
 
     return {
       accessors: {
@@ -1860,7 +1727,7 @@ relative distribution.
         return lines;
       }
     };
-  };
+  });
 }).call(this);
 
 (function() {
@@ -1870,7 +1737,7 @@ relative distribution.
    */
 
   'use strict';
-  d4.features.stackedColumnLabels = function(name) {
+  d4.feature('stackedColumnLabels', function(name) {
     var sign = function(val) {
       return val > 0 ? 'positive' : 'negative';
     };
@@ -1882,13 +1749,22 @@ relative distribution.
         },
 
         y: function(d) {
-          var halfHeight = Math.abs(this.y(d.y0) - this.y(d.y0 + d.y)) / 2;
-          var yVal = d.y0 + d.y;
-          return (yVal < 0 ? this.y(d.y0) : this.y(yVal)) + halfHeight;
+          if(typeof d.y0 !== 'undefined'){
+            var halfHeight = Math.abs(this.y(d.y0) - this.y(d.y0 + d.y)) / 2;
+            var yVal = d.y0 + d.y;
+            return (yVal < 0 ? this.y(d.y0) : this.y(yVal)) + halfHeight;
+          } else {
+            var height = Math.abs(this.y(d[this.yKey]) - this.y(0));
+            return (d[this.yKey] < 0 ? this.y(d[this.yKey]) - height : this.y(d[this.yKey])) - 5;
+          }
         },
 
         text: function(d) {
-          if(Math.abs(this.y(d.y0) - this.y(d.y0 + d.y)) > 20) {
+          if(typeof d.y0 !== 'undefined'){
+            if(Math.abs(this.y(d.y0) - this.y(d.y0 + d.y)) > 20) {
+              return d3.format('').call(this, d[this.valueKey]);
+            }
+          } else {
             return d3.format('').call(this, d[this.valueKey]);
           }
         }
@@ -1915,7 +1791,7 @@ relative distribution.
         return text;
       }
     };
-  };
+  });
 }).call(this);
 
 (function() {
@@ -1925,7 +1801,7 @@ relative distribution.
    */
 
   'use strict';
-  d4.features.stackedColumnSeries = function(name) {
+  d4.feature('stackedColumnSeries', function(name) {
     var sign = function(val){
       return (val > 0) ? 'positive' : 'negative';
     };
@@ -1937,8 +1813,12 @@ relative distribution.
         },
 
         y: function(d) {
-          var yVal = d.y0 + d.y;
-          return  yVal < 0 ? this.y(d.y0) : this.y(yVal);
+          if(d.y0){
+            var yVal = d.y0 + d.y;
+            return  yVal < 0 ? this.y(d.y0) : this.y(yVal);
+          } else {
+            return d[this.yKey] < 0 ? this.y(0) : this.y(d[this.yKey]);
+          }
         },
 
         width: function() {
@@ -1946,7 +1826,11 @@ relative distribution.
         },
 
         height: function(d) {
-          return Math.abs(this.y(d.y0) - this.y(d.y0 + d.y));
+          if(d.y0){
+            return Math.abs(this.y(d.y0) - this.y(d.y0 + d.y));
+          }else {
+            return Math.abs(this.y(d[this.yKey]) - this.y(0));
+          }
         },
 
         classes: function(d,i) {
@@ -1976,7 +1860,7 @@ relative distribution.
         return rect;
       }
     };
-  };
+  });
 }).call(this);
 
 (function() {
@@ -1986,7 +1870,7 @@ relative distribution.
    */
 
   'use strict';
-  d4.features.trendLine = function(name) {
+  d4.feature('trendLine', function(name) {
     return {
       accessors: {
         x1: function() {
@@ -2050,7 +1934,7 @@ relative distribution.
         return trendLine;
       }
     };
-  };
+  });
 }).call(this);
 
 (function() {
@@ -2076,7 +1960,7 @@ the direction of the lines.
 `classes` - applies the class to the connector lines.
 
 */
-  d4.features.waterfallConnectors = function(name) {
+  d4.feature('waterfallConnectors', function(name) {
     return {
       accessors: {
         x: function(d) {
@@ -2163,7 +2047,7 @@ the direction of the lines.
         return lines;
       }
     };
-  };
+  });
 }).call(this);
 
 (function() {
@@ -2173,7 +2057,7 @@ the direction of the lines.
    */
 
   'use strict';
-  d4.features.xAxis = function(name) {
+  d4.feature('xAxis', function(name) {
     return {
       accessors: {
         format: function(xAxis) {
@@ -2189,7 +2073,7 @@ the direction of the lines.
 
       }
     };
-  };
+  });
 }).call(this);
 
 (function() {
@@ -2199,7 +2083,7 @@ the direction of the lines.
    */
 
   'use strict';
-  d4.features.yAxis = function(name) {
+  d4.feature('yAxis', function(name) {
 
     // FIXME: This should be a util function
     // Extracted from: http://bl.ocks.org/mbostock/7555321
@@ -2246,7 +2130,7 @@ the direction of the lines.
           .call(wrap, this.margin.left);
       }
     };
-  };
+  });
 }).call(this);
 (function() {
   /*! global d3: false */
@@ -2295,7 +2179,7 @@ Keep reading for more information on these various accessor functions.
     {"year" : "2010", "category" : "Category Four", "value" : 5 }]
 
   **/
-  d4.parsers.nestedGroup = function nestedGroup() {
+  d4.parser('nestedGroup', function nestedGroup() {
 
     var opts = {
       x: {
@@ -2349,7 +2233,7 @@ Keep reading for more information on these various accessor functions.
     };
 
     parser.nestKey = function(funct) {
-      opts.nestKey = funct.bind(opts);
+      opts.nestKey = d4.functor(funct).bind(opts);
       return parser;
     };
 
@@ -2369,7 +2253,7 @@ Keep reading for more information on these various accessor functions.
     };
 
     return parser;
-  };
+  });
 }).call(this);
 
 (function() {
@@ -2472,7 +2356,7 @@ The `parser` variable will now be an object containing the following structure:
     }
 
 **/
-  d4.parsers.nestedStack = function nestedStack() {
+  d4.parser('nestedStack', function nestedStack() {
 
     var opts = {
       x: {
@@ -2567,7 +2451,7 @@ The `parser` variable will now be an object containing the following structure:
     };
 
     return parser;
-  };
+  });
 }).call(this);
 
 (function() {
@@ -2668,7 +2552,7 @@ The `parser` variable will now be an object containing the following structure:
     * y - an object with a key representing the y accessor and an array of values
 
   **/
-  d4.parsers.waterfall = function waterfall() {
+  d4.parser('waterfall', function waterfall() {
 
     var opts = {
       x: {
@@ -2762,7 +2646,7 @@ The `parser` variable will now be an object containing the following structure:
     };
 
     parser.nestKey = function(funct) {
-      opts.nestKey = funct.bind(opts);
+      opts.nestKey = d4.functor(funct).bind(opts);
       return parser;
     };
 
@@ -2782,5 +2666,72 @@ The `parser` variable will now be an object containing the following structure:
     };
 
     return parser;
+  });
+}).call(this);
+
+(function() {
+  /*!
+   * global d3: false
+   * global d4: false
+   */
+  'use strict';
+
+  var extractValues = function(data, key) {
+    var values = data.map(function(obj) {
+      return obj.values.map(function(i) {
+        return i[key];
+      }.bind(this));
+    }.bind(this));
+    return d3.merge(values);
   };
+
+  var rangeFor = function(chart, dimension) {
+
+    // This may not be a very robust approach.
+    switch (dimension) {
+      case 'x':
+        return [0, chart.width - chart.margin.left - chart.margin.right];
+      case 'y':
+        return [chart.height - chart.margin.top - chart.margin.bottom, 0];
+      default:
+        return [];
+    }
+  };
+
+  /**
+   * Creates a linear scale for a dimension of a given chart.
+   * @param {Object} d4 chart object
+   * @param {Array} data array
+   * @param {string} string represnting a dimension e.g. `x`,`y`.
+   * @returns {Object} Chart scale object
+   */
+  d4.builder('linearScaleForNestedData', function(chart, data, dimension) {
+    var key = chart[dimension + 'Key'];
+    var ext = d3.extent(d3.merge(data.map(function(obj) {
+      return d3.extent(obj.values, function(d) {
+        return d[key] + (d.y0 || 0);
+      });
+    })));
+    chart[dimension] = d3.scale.linear();
+    return chart[dimension].domain([Math.min(0, ext[0]), ext[1]])
+    .range(rangeFor(chart, dimension))
+    .clamp(true)
+    .nice();
+  });
+
+  /**
+   * Creates an ordinal scale for a dimension of a given chart.
+   * @param {Object} d4 chart object
+   * @param {Array} data array
+   * @param {string} string represnting a dimension e.g. `x`,`y`.
+   * @returns {Object} Chart scale object
+   */
+  d4.builder('ordinalScaleForNestedData', function(chart, data, dimension) {
+    var parsedData = extractValues(data, chart[dimension + 'Key']);
+    var bands = chart[dimension + 'RoundBands'] = chart[dimension + 'RoundBands'] || 0.3;
+    chart[dimension] = d3.scale.ordinal();
+    return chart[dimension]
+      .domain(parsedData)
+      .rangeRoundBands(rangeFor(chart, dimension), bands);
+  });
 }).call(this);
