@@ -19,9 +19,15 @@ Include the gem in your Gemfile and run bundle install.
 
     gem 'd4-rails'
 
-Also require `d4.js` is your `application.js`
+require `d3` and `d4` (minified) in your `application.js`
+
+    //= require 'd3.min'
+    //= require 'd4.min'
+
+Also, require `d4.css` in your `application.js`
 
     //= require 'd4'
+
 
 That's it! :pray:
 
