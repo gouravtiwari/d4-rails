@@ -24,9 +24,9 @@ require `d3` and `d4` (minified) in your `application.js`
     //= require 'd3.min'
     //= require 'd4.min'
 
-Also, require `d4.css` in your `application.js`
+Also, require `d4.css` in your `application.css`
 
-    //= require 'd4'
+    *= require 'd4'
 
 
 That's it! :pray:
